@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>NEON ORACLE // Football Predictor</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<div class="scanlines"></div>
+<div class="grid-bg"></div>
+
+<header class="hero">
+  <div class="logo">
+    <span class="glitch" data-text="NEON">NEON</span>
+    <span class="glitch alt" data-text="ORACLE">ORACLE</span>
+  </div>
+  <p class="tagline">// FOOTBALL MATCH PREDICTION ENGINE — v1.0 //</p>
+</header>
+
+<main>
+  <section class="panel">
+    <h2 class="panel-title">&gt;&gt; INPUT_MATCH_DATA</h2>
+
+    <form id="predict-form" class="form-grid" autocomplete="off">
+      <label>
+        <span>BAJNOKSÁG</span>
+        <select id="league" required>
+          <option value="">-- válassz --</option>
+          <option value="EPL">Premier League (ENG)</option>
+          <option value="LALIGA">La Liga (ESP)</option>
+          <option value="SERIEA">Serie A (ITA)</option>
+          <option value="BUNDES">Bundesliga (GER)</option>
+          <option value="LIGUE1">Ligue 1 (FRA)</option>
+          <option value="NB1">NB I. (HUN)</option>
+          <option value="UCL">UEFA Champions League</option>
+          <option value="OTHER">Egyéb</option>
+        </select>
+      </label>
+
+      <label>
+        <span>DÁTUM</span>
+        <input type="date" id="match-date" required />
+      </label>
+
+      <label>
+        <span>HAZAI CSAPAT</span>
+        <input type="text" id="home-team" list="teams" placeholder="pl. Manchester City" required />
+      </label>
+
+      <label>
+        <span>VENDÉG CSAPAT</span>
+        <input type="text" id="away-team" list="teams" placeholder="pl. Liverpool" required />
+      </label>
+
+      <datalist id="teams"></datalist>
+
+      <button type="submit" class="btn-neon">
+        <span>&#9654; RUN PREDICTION</span>
+      </button>
+    </form>
+  </section>
+
+  <section id="result" class="panel result hidden">
+    <h2 class="panel-title">&gt;&gt; PREDICTION_OUTPUT</h2>
+    <div id="result-body"></div>
+  </section>
+
+  <section id="breakdown" class="panel breakdown hidden">
+    <div class="breakdown-header">
+      <h2 class="panel-title">&gt;&gt; DETAILED_REASONING</h2>
+      <button id="toggle-breakdown" class="btn-small">HIDE</button>
+    </div>
+    <div id="breakdown-body"></div>
+  </section>
+</main>
+
+<footer>
+  <p>// POWERED BY POISSON × ELO × MONTE-CARLO ENSEMBLE //</p>
+</footer>
+
+<script src="teams.js"></script>
+<script src="predictor.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
