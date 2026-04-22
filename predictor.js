@@ -1,32 +1,46 @@
 /* ==============================================================
-   PREDICTOR ENGINE
-   Implements the full pipeline:
+   PREDICTOR ENGINE — Phase 1
+   Pipeline:
      1. Data normalization (league-average baselines)
-     2. Time-weighted form (already baked into team.form)
-     3. Attack & Defense strength (A_home, D_away, ...)
-     4. Elo model -> win expectancy
+     2. Time-weighted form (pre-baked into team.form)
+     3. Home/away-SPLIT Attack & Defense strengths
+        (atk_home / atk_away / def_home / def_away)
+     4. Elo model → win expectancy
      5. Home advantage (Elo + goal model)
-     6. Expected goals (lambda_home / lambda_away)
-     7. xG integration
+     6. Expected goals λ_home / λ_away
+     7. xG integration (home/away split when available)
      8. Injury adjustment
      9. Elo correction on lambda
      10. Poisson pmf
-     11. Scoreline probabilities
-     12. 1X2 outcome probabilities
-     13. Monte Carlo simulation
-     14. Ensemble of Poisson + Elo + xG
-     15. (Market calibration is supported if odds provided; otherwise skipped)
+     11. DIXON-COLES low-score correction
+     12. Scoreline probabilities
+     13. 1X2 outcome probabilities
+     14. Monte Carlo simulation
+     15. Ensemble of Poisson + Elo + xG
      16. Confidence tag
    ============================================================== */
 
 /* ---------- Poisson PMF (numerically safe) ---------- */
 function poissonPMF(k, lambda) {
   if (lambda <= 0) return k === 0 ? 1 : 0;
-  // log factorial
   let logFact = 0;
   for (let i = 2; i <= k; i++) logFact += Math.log(i);
   const logP = -lambda + k * Math.log(lambda) - logFact;
   return Math.exp(logP);
+}
+
+/* ---------- Dixon-Coles low-score correction ---------- */
+/* Standard DC (1997) τ multiplier: modifies only (0,0), (0,1), (1,0), (1,1).
+   With ρ negative (typical: -0.18 … -0.10), boosts P(0,0) & P(1,1) and
+   slightly reduces P(1,0) & P(0,1) — exactly the empirical bias of pure
+   Poisson vs. real football low-scoring distributions.                   */
+const DIXON_COLES_RHO = -0.15;
+function dixonColesTau(i, j, lh, la, rho = DIXON_COLES_RHO) {
+  if (i === 0 && j === 0) return 1 - lh * la * rho;
+  if (i === 0 && j === 1) return 1 + lh * rho;
+  if (i === 1 && j === 0) return 1 + la * rho;
+  if (i === 1 && j === 1) return 1 - rho;
+  return 1;
 }
 
 /* ---------- Deterministic fallback for unknown teams ---------- */
@@ -39,18 +53,17 @@ function hash(str) {
   return h;
 }
 function fakeTeam(name, league) {
-  // produce plausible, stable stats from the name
   const h = hash(name.toLowerCase());
-  const r01 = ((h % 1000) / 1000);                // 0..1
-  const r11 = (((h >>> 10) % 1000) / 1000) * 2 - 1; // -1..1
-  const elo = 1550 + Math.round(r01 * 350);       // 1550..1900
-  const atk = 0.85 + r01 * 0.6;                   // 0.85..1.45
-  const def = 0.80 + (1 - r01) * 0.55;            // 0.80..1.35
-  const form = r11 * 0.08;                        // -0.08..0.08
+  const r01 = ((h % 1000) / 1000);
+  const r11 = (((h >>> 10) % 1000) / 1000) * 2 - 1;
+  const elo = 1550 + Math.round(r01 * 350);
+  const atk = 0.85 + r01 * 0.6;
+  const def = 0.80 + (1 - r01) * 0.55;
+  const form = r11 * 0.08;
   const xg_for = 1.05 + r01 * 1.1;
   const xg_ag = 1.05 + (1 - r01) * 0.95;
   const inj = 0.03 + ((h >>> 3) % 60) / 1000;
-  return { league, elo, atk, def, form, xg_for, xg_ag, inj, _synthetic: true };
+  return { league, elo, atk, def, form, xg_for, xg_ag, inj, xg_source: 'synthetic', _synthetic: true };
 }
 
 function resolveTeam(rawName, league) {
@@ -61,7 +74,6 @@ function resolveTeam(rawName, league) {
     const real = TEAM_ALIASES[trimmed];
     return { name: real, stats: TEAMS[real] };
   }
-  // case-insensitive search
   const lower = trimmed.toLowerCase();
   for (const key of Object.keys(TEAMS)) {
     if (key.toLowerCase() === lower) return { name: key, stats: TEAMS[key] };
@@ -69,7 +81,6 @@ function resolveTeam(rawName, league) {
   for (const [al, real] of Object.entries(TEAM_ALIASES)) {
     if (al.toLowerCase() === lower) return { name: real, stats: TEAMS[real] };
   }
-  // fallback: synthetic team
   return { name: trimmed, stats: fakeTeam(trimmed, league) };
 }
 
@@ -80,13 +91,9 @@ function eloExpected(rHome, rAway, homeAdvantage = 60) {
 
 /* ---------- Monte Carlo ---------- */
 function samplePoisson(lambda) {
-  // Knuth's algorithm (fine for lambda < ~30)
   const L = Math.exp(-lambda);
   let k = 0, p = 1;
-  do {
-    k++;
-    p *= Math.random();
-  } while (p > L);
+  do { k++; p *= Math.random(); } while (p > L);
   return k - 1;
 }
 function monteCarlo(lh, la, n = 20000) {
@@ -107,16 +114,21 @@ function monteCarlo(lh, la, n = 20000) {
   }
   return {
     n,
-    pHome: home / n,
-    pDraw: draw / n,
-    pAway: away / n,
-    over15: over15 / n,
-    over25: over25 / n,
-    over35: over35 / n,
-    btts: btts / n,
-    avgTotal: totalGoals / n
+    pHome: home / n, pDraw: draw / n, pAway: away / n,
+    over15: over15 / n, over25: over25 / n, over35: over35 / n,
+    btts: btts / n, avgTotal: totalGoals / n
   };
 }
+
+/* ---------- Small helpers for reading new/legacy team fields ---------- */
+function atkHome(t) { return t.atk_home ?? t.atk ?? 1.0; }
+function atkAway(t) { return t.atk_away ?? ((t.atk ?? 1.0) * 0.95); }
+function defHome(t) { return t.def_home ?? t.def ?? 1.0; }
+function defAway(t) { return t.def_away ?? ((t.def ?? 1.0) * 1.02); }
+function xgForHome(t) { return t.xg_for_home ?? t.xg_for ?? 1.3; }
+function xgForAway(t) { return t.xg_for_away ?? t.xg_for ?? 1.1; }
+function xgAgHome(t)  { return t.xg_ag_home  ?? t.xg_ag  ?? 1.2; }
+function xgAgAway(t)  { return t.xg_ag_away  ?? t.xg_ag  ?? 1.4; }
 
 /* ---------- Main predict ---------- */
 function predictMatch({ league, date, home, away }) {
@@ -129,12 +141,15 @@ function predictMatch({ league, date, home, away }) {
   const ht = H.stats;
   const at = A.stats;
 
-  // ---- 3. Attack/Defense strengths (relative to league avg) ----
-  // Interpret ht.atk as the team's home-attack factor, ht.def as defense factor.
-  const A_home = ht.atk * (1 + ht.form);
-  const D_home = ht.def;
-  const A_away = at.atk * (1 + at.form) * 0.95;   // away teams slightly weaker
-  const D_away = at.def * 1.02;
+  // ---- 3. Attack/Defense strengths — SPLIT home/away ----
+  // A_home = home team's attacking strength when playing at home
+  // D_away = away team's defensive strength when playing away
+  // A_away = away team's attacking strength when playing away
+  // D_home = home team's defensive strength when playing at home
+  const A_home = atkHome(ht) * (1 + ht.form);
+  const D_home = defHome(ht);
+  const A_away = atkAway(at) * (1 + at.form);
+  const D_away = defAway(at);
 
   // ---- 4-5. Elo with home advantage ----
   const H_elo = 60;
@@ -142,16 +157,16 @@ function predictMatch({ league, date, home, away }) {
   const E_away = 1 - E_home;
 
   // ---- 6. Base expected goals ----
-  const H_goal = 1.18; // multiplicative home advantage on goals
-  let lambda_home_base = mu_home * A_home * D_away * H_goal;
-  let lambda_away_base = mu_away * A_away * D_home;
+  const H_goal = 1.18;
+  const lambda_home_base = mu_home * A_home * D_away * H_goal;
+  const lambda_away_base = mu_away * A_away * D_home;
 
-  // ---- 7. xG integration (alpha = 0.7) ----
+  // ---- 7. xG integration (alpha = 0.7), SPLIT home/away when available ----
   const alpha = 0.7;
-  const lambda_home_xg =
-    alpha * lambda_home_base + (1 - alpha) * ((ht.xg_for + at.xg_ag) / 2) * (H_goal / 1.1);
-  const lambda_away_xg =
-    alpha * lambda_away_base + (1 - alpha) * ((at.xg_for + ht.xg_ag) / 2) * 0.95;
+  const xgBlend_home = (xgForHome(ht) + xgAgAway(at)) / 2;
+  const xgBlend_away = (xgForAway(at) + xgAgHome(ht)) / 2;
+  const lambda_home_xg = alpha * lambda_home_base + (1 - alpha) * xgBlend_home * (H_goal / 1.1);
+  const lambda_away_xg = alpha * lambda_away_base + (1 - alpha) * xgBlend_away * 0.95;
 
   // ---- 8. Injury adjustment ----
   const lambda_home_inj = lambda_home_xg * (1 - ht.inj);
@@ -163,63 +178,90 @@ function predictMatch({ league, date, home, away }) {
   const lambda_home = Math.max(0.2, lambda_home_inj * (1 + beta * deltaElo));
   const lambda_away = Math.max(0.2, lambda_away_inj * (1 - beta * deltaElo));
 
-  // ---- 10-12. Poisson scoreline grid ----
-  const MAX = 6; // 0..5 inclusive + tail bucket
+  // ---- 10. Poisson scoreline grid ----
+  const MAX = 6;
   const grid = [];
-  let pHomePoisson = 0, pDrawPoisson = 0, pAwayPoisson = 0;
-  let bestScore = { i: 0, j: 0, p: 0 };
-
   for (let i = 0; i <= MAX; i++) {
     const row = [];
     for (let j = 0; j <= MAX; j++) {
-      const p = poissonPMF(i, lambda_home) * poissonPMF(j, lambda_away);
-      row.push(p);
-      if (i > j) pHomePoisson += p;
-      else if (i < j) pAwayPoisson += p;
-      else pDrawPoisson += p;
-      if (p > bestScore.p) bestScore = { i, j, p };
+      row.push(poissonPMF(i, lambda_home) * poissonPMF(j, lambda_away));
     }
     grid.push(row);
   }
-  // normalize (the tail beyond MAX is small but nonzero)
-  const sumP = pHomePoisson + pDrawPoisson + pAwayPoisson;
-  pHomePoisson /= sumP; pDrawPoisson /= sumP; pAwayPoisson /= sumP;
 
-  // ---- Totals from Poisson grid ----
+  // ---- 11. Dixon-Coles correction applied to the grid ----
+  // Multiply only low-score cells by τ, then renormalize the whole grid.
+  for (let i = 0; i <= MAX; i++) {
+    for (let j = 0; j <= MAX; j++) {
+      grid[i][j] *= dixonColesTau(i, j, lambda_home, lambda_away, DIXON_COLES_RHO);
+    }
+  }
+  let gridSum = 0;
+  for (let i = 0; i <= MAX; i++)
+    for (let j = 0; j <= MAX; j++)
+      gridSum += grid[i][j];
+  if (gridSum > 0) {
+    for (let i = 0; i <= MAX; i++)
+      for (let j = 0; j <= MAX; j++)
+        grid[i][j] /= gridSum;
+  }
+
+  // ---- 12. Scoreline and 1X2 from corrected grid ----
+  let pHomePoisson = 0, pDrawPoisson = 0, pAwayPoisson = 0;
   let pOver15 = 0, pOver25 = 0, pOver35 = 0, pBTTS = 0;
+  let bestScore = { i: 0, j: 0, p: 0 };
   for (let i = 0; i <= MAX; i++) {
     for (let j = 0; j <= MAX; j++) {
       const p = grid[i][j];
+      if (i > j) pHomePoisson += p;
+      else if (i < j) pAwayPoisson += p;
+      else pDrawPoisson += p;
       if (i + j > 1) pOver15 += p;
       if (i + j > 2) pOver25 += p;
       if (i + j > 3) pOver35 += p;
       if (i > 0 && j > 0) pBTTS += p;
+      if (p > bestScore.p) bestScore = { i, j, p };
     }
   }
 
-  // ---- 4. Elo-based 1X2 (with a simple draw carve-out) ----
-  // A standard trick: assume draw probability decays with abs(Elo diff)
+  // ---- 13. Elo-based 1X2 (draw carve-out) ----
   const eloDiff = Math.abs(ht.elo - at.elo);
-  const pDrawElo = Math.max(0.16, 0.30 - eloDiff / 2000); // 0.16..0.30
+  const pDrawElo = Math.max(0.16, 0.30 - eloDiff / 2000);
   const pHomeElo = (1 - pDrawElo) * E_home;
   const pAwayElo = (1 - pDrawElo) * E_away;
 
-  // ---- 7. xG-only probability pass (via shifted lambdas) ----
-  const lambda_home_xgOnly = Math.max(0.2, ((ht.xg_for + at.xg_ag) / 2) * 1.1);
-  const lambda_away_xgOnly = Math.max(0.2, ((at.xg_for + ht.xg_ag) / 2) * 0.95);
+  // ---- 7b. xG-only probability pass (DC-corrected as well) ----
+  const lambda_home_xgOnly = Math.max(0.2, xgBlend_home * 1.1);
+  const lambda_away_xgOnly = Math.max(0.2, xgBlend_away * 0.95);
   let pHomeXG = 0, pDrawXG = 0, pAwayXG = 0;
-  for (let i = 0; i <= MAX; i++) {
-    for (let j = 0; j <= MAX; j++) {
-      const p = poissonPMF(i, lambda_home_xgOnly) * poissonPMF(j, lambda_away_xgOnly);
-      if (i > j) pHomeXG += p;
-      else if (i < j) pAwayXG += p;
-      else pDrawXG += p;
+  {
+    const g2 = [];
+    for (let i = 0; i <= MAX; i++) {
+      const row = [];
+      for (let j = 0; j <= MAX; j++) {
+        row.push(
+          poissonPMF(i, lambda_home_xgOnly) *
+          poissonPMF(j, lambda_away_xgOnly) *
+          dixonColesTau(i, j, lambda_home_xgOnly, lambda_away_xgOnly)
+        );
+      }
+      g2.push(row);
+    }
+    let sXg = 0;
+    for (let i = 0; i <= MAX; i++)
+      for (let j = 0; j <= MAX; j++)
+        sXg += g2[i][j];
+    for (let i = 0; i <= MAX; i++) {
+      for (let j = 0; j <= MAX; j++) {
+        const p = g2[i][j] / sXg;
+        if (i > j) pHomeXG += p;
+        else if (i < j) pAwayXG += p;
+        else pDrawXG += p;
+      }
     }
   }
-  const sxg = pHomeXG + pDrawXG + pAwayXG;
-  pHomeXG /= sxg; pDrawXG /= sxg; pAwayXG /= sxg;
 
-  // ---- 14. Ensemble ----
+  // ---- 15. Ensemble ----
   const w1 = 0.5, w2 = 0.3, w3 = 0.2;
   let pHome = w1 * pHomePoisson + w2 * pHomeElo + w3 * pHomeXG;
   let pDraw = w1 * pDrawPoisson + w2 * pDrawElo + w3 * pDrawXG;
@@ -227,7 +269,7 @@ function predictMatch({ league, date, home, away }) {
   const s = pHome + pDraw + pAway;
   pHome /= s; pDraw /= s; pAway /= s;
 
-  // ---- 13. Monte Carlo cross-check ----
+  // ---- 14. Monte Carlo cross-check (pure Poisson, no DC — intentional) ----
   const mc = monteCarlo(lambda_home, lambda_away, 20000);
 
   // ---- 16. Confidence ----
@@ -236,22 +278,22 @@ function predictMatch({ league, date, home, away }) {
   if (gap > 0.25) confidenceLabel = "HIGH";
   else if (gap > 0.12) confidenceLabel = "MED";
 
-  // ---- Pick over/under recommendation ----
+  // ---- goal-line recommendation ----
   const totalExp = lambda_home + lambda_away;
   let goalLine = "Over 1.5";
   let goalLineProb = pOver15;
-  if (pOver35 >= 0.55)      { goalLine = "Over 3.5"; goalLineProb = pOver35; }
-  else if (pOver25 >= 0.55) { goalLine = "Over 2.5"; goalLineProb = pOver25; }
-  else if (pOver15 >= 0.65) { goalLine = "Over 1.5"; goalLineProb = pOver15; }
-  else if (pOver25 < 0.40)  { goalLine = "Under 2.5"; goalLineProb = 1 - pOver25; }
-  else                       { goalLine = "Over 1.5"; goalLineProb = pOver15; }
+  if (pOver35 >= 0.55)       { goalLine = "Over 3.5";  goalLineProb = pOver35; }
+  else if (pOver25 >= 0.55)  { goalLine = "Over 2.5";  goalLineProb = pOver25; }
+  else if (pOver15 >= 0.65)  { goalLine = "Over 1.5";  goalLineProb = pOver15; }
+  else if (pOver25 < 0.40)   { goalLine = "Under 2.5"; goalLineProb = 1 - pOver25; }
+  else                       { goalLine = "Over 1.5";  goalLineProb = pOver15; }
 
-  // ---- Pick 1X2 recommendation ----
+  // ---- 1X2 recommendation ----
   let pick = "X";
   let pickProb = pDraw;
   if (pHome >= pDraw && pHome >= pAway) { pick = "1"; pickProb = pHome; }
   else if (pAway >= pDraw && pAway >= pHome) { pick = "2"; pickProb = pAway; }
-  // "ambiguous" heuristic: two close top probs → mention double chance
+
   let doubleChance = null;
   const sorted = [
     { k: "1", p: pHome },
@@ -260,14 +302,22 @@ function predictMatch({ league, date, home, away }) {
   ].sort((a, b) => b.p - a.p);
   if (sorted[0].p - sorted[1].p < 0.06) {
     doubleChance = [sorted[0].k, sorted[1].k].sort().join("");
-    // "1X" or "X2" or "12"
   }
 
   return {
-    inputs: { league, date, home: H.name, away: A.name, homeSynthetic: ht._synthetic, awaySynthetic: at._synthetic },
+    inputs: {
+      league, date,
+      home: H.name, away: A.name,
+      homeSynthetic: ht._synthetic, awaySynthetic: at._synthetic,
+      xgSourceHome: ht.xg_source, xgSourceAway: at.xg_source
+    },
     teams: { home: ht, away: at },
     mu: { mu_home, mu_away },
-    strengths: { A_home, D_home, A_away, D_away },
+    strengths: {
+      A_home, D_home, A_away, D_away,
+      atkHome_raw: atkHome(ht), atkAway_raw: atkAway(at),
+      defHome_raw: defHome(ht), defAway_raw: defAway(at)
+    },
     elo: { rHome: ht.elo, rAway: at.elo, H_elo, E_home, E_away, pHomeElo, pDrawElo, pAwayElo, deltaElo },
     goalModel: {
       H_goal,
@@ -278,7 +328,11 @@ function predictMatch({ league, date, home, away }) {
       totalExp
     },
     xgOnly: { lambda_home_xgOnly, lambda_away_xgOnly, pHomeXG, pDrawXG, pAwayXG },
-    poisson: { grid, pHomePoisson, pDrawPoisson, pAwayPoisson, pOver15, pOver25, pOver35, pBTTS, bestScore },
+    poisson: {
+      grid, pHomePoisson, pDrawPoisson, pAwayPoisson,
+      pOver15, pOver25, pOver35, pBTTS, bestScore,
+      dixon_coles_rho: DIXON_COLES_RHO
+    },
     montecarlo: mc,
     ensemble: { w1, w2, w3, pHome, pDraw, pAway },
     recommendation: {

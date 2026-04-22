@@ -164,31 +164,54 @@ function renderBreakdown(r) {
       Ez a baseline minden várhatógól-számítás alapja.
     </p>
 
-    <h3>2–3. CSAPAT ERŐSÉGEK (időben súlyozott forma beépítve)</h3>
-    <p>A csapat-prior értékek (ideértve az utolsó meccsek exponenciálisan súlyozott formáját is):</p>
+    <h3>2–3. CSAPAT ERŐSÉGEK (home/away bontás, forma beépítve)</h3>
+    <p>
+      A csapat-prior értékek külön a hazai és a vendég viselkedésre
+      (a korábbi verzió átlagolta a kettőt, ami jelentős információt mosott el).
+      A támadó (A) és védő (D) értékek az adott liga átlagához viszonyítottak:
+      <span class="mono">A &gt; 1</span> erősebb támadás, <span class="mono">D &lt; 1</span> erősebb védelem.
+    </p>
     <table>
-      <tr><th>Csapat</th><th>Elo</th><th>Támadó (A)</th><th>Védő (D)</th><th>Forma</th><th>xG/meccs</th><th>xGA</th><th>Hiányzók hatása</th></tr>
+      <tr>
+        <th>Csapat</th><th>Elo</th>
+        <th>A_home</th><th>A_away</th>
+        <th>D_home</th><th>D_away</th>
+        <th>Forma</th><th>xG/meccs</th><th>xGA</th><th>xG forrás</th><th>Sérülés</th>
+      </tr>
       <tr>
         <td>${escapeHtml(r.inputs.home)} (hazai)</td>
         <td class="mono">${ht.elo}</td>
-        <td class="mono">${n(ht.atk)}</td>
-        <td class="mono">${n(ht.def)}</td>
+        <td class="mono">${n(ht.atk_home ?? ht.atk, 3)}</td>
+        <td class="mono">${n(ht.atk_away ?? (ht.atk ?? 1) * 0.95, 3)}</td>
+        <td class="mono">${n(ht.def_home ?? ht.def, 3)}</td>
+        <td class="mono">${n(ht.def_away ?? (ht.def ?? 1) * 1.02, 3)}</td>
         <td class="mono">${ht.form >= 0 ? "+" : ""}${n(ht.form)}</td>
         <td class="mono">${n(ht.xg_for)}</td>
         <td class="mono">${n(ht.xg_ag)}</td>
-        <td class="mono">${n(ht.inj*100,1)}%</td>
+        <td class="mono" style="color:${ht.xg_source === 'understat' ? 'var(--neon-green)' : 'var(--text-dim)'}">${ht.xg_source || "proxy"}</td>
+        <td class="mono">${n((ht.inj ?? 0)*100, 1)}%</td>
       </tr>
       <tr>
         <td>${escapeHtml(r.inputs.away)} (vendég)</td>
         <td class="mono">${at.elo}</td>
-        <td class="mono">${n(at.atk)}</td>
-        <td class="mono">${n(at.def)}</td>
+        <td class="mono">${n(at.atk_home ?? at.atk, 3)}</td>
+        <td class="mono">${n(at.atk_away ?? (at.atk ?? 1) * 0.95, 3)}</td>
+        <td class="mono">${n(at.def_home ?? at.def, 3)}</td>
+        <td class="mono">${n(at.def_away ?? (at.def ?? 1) * 1.02, 3)}</td>
         <td class="mono">${at.form >= 0 ? "+" : ""}${n(at.form)}</td>
         <td class="mono">${n(at.xg_for)}</td>
         <td class="mono">${n(at.xg_ag)}</td>
-        <td class="mono">${n(at.inj*100,1)}%</td>
+        <td class="mono" style="color:${at.xg_source === 'understat' ? 'var(--neon-green)' : 'var(--text-dim)'}">${at.xg_source || "proxy"}</td>
+        <td class="mono">${n((at.inj ?? 0)*100, 1)}%</td>
       </tr>
     </table>
+    <p style="color:var(--text-dim); font-size:0.85rem">
+      A modell a λ-számításban az <span class="mono">A_home</span>-ot és
+      <span class="mono">D_away</span>-t keresztezi a hazai λ-hoz, illetve
+      <span class="mono">A_away</span>-t és <span class="mono">D_home</span>-ot
+      a vendég λ-hoz. Ha az xG forrása „understat", valódi lövésminőségen alapul;
+      „proxy" esetén csak a gólátlagból becsült közelítés.
+    </p>
     ${(r.inputs.homeSynthetic || r.inputs.awaySynthetic) ? `
       <p style="color:var(--neon-yellow)">
         Figyelmeztetés: legalább az egyik csapatra nincs explicit adat az adatbázisban,
@@ -244,8 +267,15 @@ function renderBreakdown(r) {
       várható össz-gól: <span class="mono">${n(r.goalModel.totalExp, 2)}</span>.
     </p>
 
-    <h3>10–11. POISSON ELOSZLÁS · SCORELINE MÁTRIX</h3>
-    <p>Oszlopok = vendég gólok (0..5), sorok = hazai gólok (0..5). Az érték <span class="mono">%</span>:</p>
+    <h3>10–11. POISSON + DIXON–COLES KORRIGÁLT SCORELINE MÁTRIX</h3>
+    <p>
+      Oszlopok = vendég gólok (0..5), sorok = hazai gólok (0..5). Az érték <span class="mono">%</span>.
+      A nyers Poisson-szorzatot a Dixon–Coles (1997) korrekció módosítja a
+      <span class="mono">0–0, 1–0, 0–1, 1–1</span> cellákban
+      (<span class="mono">ρ = ${n(r.poisson.dixon_coles_rho ?? -0.15, 2)}</span>):
+      a 0–0 és 1–1 valószínűségét felhúzza, a 0–1 / 1–0 cellákat visszavágja,
+      majd a mátrix újranormalizálásra kerül.
+    </p>
     ${heat.join("")}
     <p>
       Legvalószínűbb pontos végeredmény:
