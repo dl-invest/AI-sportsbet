@@ -622,6 +622,56 @@ main > .betslip        { grid-column: 2; grid-row: span 10; position: sticky; to
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 6px;
 }
+
+.fx-events-expanded {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: slideDown 0.25s ease-out;
+}
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fx-event-group {
+  background: rgba(0,0,0,0.25);
+  border: 1px dashed rgba(0,240,255,0.18);
+  border-radius: 6px;
+  padding: 8px 10px 10px;
+}
+.fx-event-group-title {
+  color: var(--neon-cyan);
+  font-size: 0.72rem;
+  letter-spacing: 2.5px;
+  margin-bottom: 6px;
+  text-shadow: 0 0 6px rgba(0,240,255,0.5);
+  text-transform: uppercase;
+}
+
+.fx-expand-btn {
+  margin-top: 10px;
+  width: 100%;
+  background: transparent;
+  color: var(--neon-cyan);
+  border: 1px dashed rgba(0,240,255,0.4);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 0.75rem;
+  letter-spacing: 2.5px;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-shadow: 0 0 6px rgba(0,240,255,0.4);
+}
+.fx-expand-btn:hover {
+  background: rgba(0,240,255,0.1);
+  border-color: var(--neon-cyan);
+  box-shadow: 0 0 12px rgba(0,240,255,0.25);
+}
+.fixture-card.expanded {
+  border-color: rgba(0,240,255,0.5);
+  box-shadow: 0 0 24px rgba(0,240,255,0.12);
+}
 .event-chip {
   display: grid;
   grid-template-columns: 1fr auto auto;

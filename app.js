@@ -384,6 +384,7 @@ const LEAGUE_LABEL = {
 
 let manualFixtures = loadLS("manualFixtures", []);
 let slip           = loadLS("betslip",        []);
+const expandedFx   = new Set(); // IDs of fixture cards in expanded mode
 
 function loadLS(key, def) {
   try { return JSON.parse(localStorage.getItem(key)) ?? def; }
@@ -498,6 +499,16 @@ function renderFixtures() {
   list.querySelectorAll(".remove-fixture-btn").forEach((btn) => {
     btn.addEventListener("click", onRemoveManualFixture);
   });
+  list.querySelectorAll(".fx-expand-btn").forEach((btn) => {
+    btn.addEventListener("click", onToggleExpand);
+  });
+}
+
+function onToggleExpand(e) {
+  const id = e.currentTarget.dataset.fxId;
+  if (expandedFx.has(id)) expandedFx.delete(id);
+  else expandedFx.add(id);
+  renderFixtures();
 }
 
 function renderFixtureCard(fx) {
@@ -513,68 +524,141 @@ function renderFixtureCard(fx) {
     return `<div class="fixture-card error">Predikció hiba: ${escapeHtml(err.message)}</div>`;
   }
 
-  const { pick, pickProb, goalLine, goalLineProb } = pred.recommendation;
-  const pickLabel =
-    pick === "1" ? fx.home :
-    pick === "2" ? fx.away : "Döntetlen";
-  const pickCode = pick === "1" ? "1" : pick === "2" ? "2" : "X";
-
   const time = new Date(fx.utcDate).toLocaleTimeString("hu-HU",
     { hour: "2-digit", minute: "2-digit" });
-
-  // Candidate events — we take the TOP-3 by probability (dedup).
-  const candidates = [
-    { code: pickCode,  label: `${pickLabel} (${pickCode})`, prob: pickProb,           kind: "1X2" },
-    { code: goalLine,  label: goalLine,                     prob: goalLineProb,       kind: "TOTAL" },
-    { code: "BTTS_Y",  label: "BTTS: Igen",                 prob: pred.poisson.pBTTS, kind: "BTTS" },
-    { code: "O15",     label: "Over 1.5",                   prob: pred.poisson.pOver15, kind: "TOTAL" },
-    { code: "O25",     label: "Over 2.5",                   prob: pred.poisson.pOver25, kind: "TOTAL" },
-  ];
-  // dedupe by (code + kind) and take top 3 by prob
-  const seen = new Set();
-  const events = [];
-  for (const e of candidates.sort((a, b) => b.prob - a.prob)) {
-    const key = `${e.kind}:${e.code}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    events.push(e);
-    if (events.length === 3) break;
-  }
 
   const statusBadge = renderStatus(fx.status, fx.score);
   const removeBtn = fx.manual
     ? `<button class="remove-fixture-btn" data-fx-id="${escapeHtml(fx.id)}" title="Törlés">✕</button>` : "";
 
-  const fxEnc = encodeURIComponent(JSON.stringify({
+  const fxMeta = {
     id: fx.id, league: fx.league, utcDate: fx.utcDate, home: fx.home, away: fx.away,
+  };
+  const fxEnc = encodeURIComponent(JSON.stringify(fxMeta));
+
+  // ---- Build ALL events grouped by category ----
+  const e = pred.ensemble;
+  const p = pred.poisson;
+
+  const outcomes = [
+    { code: "1", label: `${fx.home} (1)`, prob: e.pHome, kind: "1X2" },
+    { code: "X", label: `Döntetlen (X)`,  prob: e.pDraw, kind: "1X2" },
+    { code: "2", label: `${fx.away} (2)`, prob: e.pAway, kind: "1X2" },
+  ].sort((a, b) => b.prob - a.prob);
+
+  const dc = {
+    home1x: e.pHome + e.pDraw,     // 1X
+    drawAw: e.pDraw + e.pAway,     // X2
+    homeAw: e.pHome + e.pAway,     // 12
+  };
+  const dcEvents = [
+    { code: "1X", label: `Dupla esély 1X`, prob: dc.home1x, kind: "DC" },
+    { code: "X2", label: `Dupla esély X2`, prob: dc.drawAw, kind: "DC" },
+    { code: "12", label: `Dupla esély 12`, prob: dc.homeAw, kind: "DC" },
+  ].sort((a, b) => b.prob - a.prob);
+
+  const totals = [
+    { code: "O15", label: "Over 1.5",  prob: p.pOver15,     kind: "TOTAL" },
+    { code: "U15", label: "Under 1.5", prob: 1 - p.pOver15, kind: "TOTAL" },
+    { code: "O25", label: "Over 2.5",  prob: p.pOver25,     kind: "TOTAL" },
+    { code: "U25", label: "Under 2.5", prob: 1 - p.pOver25, kind: "TOTAL" },
+    { code: "O35", label: "Over 3.5",  prob: p.pOver35,     kind: "TOTAL" },
+    { code: "U35", label: "Under 3.5", prob: 1 - p.pOver35, kind: "TOTAL" },
+  ].sort((a, b) => b.prob - a.prob);
+
+  const bttsEvents = [
+    { code: "BTTS_Y", label: "BTTS: Igen", prob: p.pBTTS,     kind: "BTTS" },
+    { code: "BTTS_N", label: "BTTS: Nem",  prob: 1 - p.pBTTS, kind: "BTTS" },
+  ].sort((a, b) => b.prob - a.prob);
+
+  // Top scoreline (from DC-corrected grid): take the 3 highest cells
+  const topScores = [];
+  for (let i = 0; i < p.grid.length; i++) {
+    for (let j = 0; j < p.grid[i].length; j++) {
+      topScores.push({ i, j, prob: p.grid[i][j] });
+    }
+  }
+  topScores.sort((a, b) => b.prob - a.prob);
+  const scoreEvents = topScores.slice(0, 3).map((s) => ({
+    code: `S_${s.i}_${s.j}`,
+    label: `Pontos eredmény ${s.i}–${s.j}`,
+    prob: s.prob,
+    kind: "SCORE",
   }));
 
+  const fxId = String(fx.id);
+  const isExpanded = expandedFx.has(fxId);
+
+  // ---- Default (collapsed) preview: the model's single best pick per category ----
+  const preview = [
+    outcomes[0],   // most likely 1X2
+    totals[0],     // most likely total line
+  ];
+
+  const bodyHtml = isExpanded
+    ? renderExpandedEvents(fxMeta, fxEnc, {
+        outcomes, dcEvents, totals, bttsEvents, scoreEvents,
+      })
+    : renderEventChips(fxEnc, preview, fxId);
+
+  const toggleLabel = isExpanded ? "— KEVESEBB" : "+ ÖSSZES FOGADÁSI ESEMÉNY";
+
   return `
-    <div class="fixture-card" data-fx-id="${escapeHtml(String(fx.id))}">
+    <div class="fixture-card ${isExpanded ? "expanded" : ""}" data-fx-id="${escapeHtml(fxId)}">
       <div class="fx-header">
         <span class="fx-time">${time}</span>
         <span class="fx-teams">${escapeHtml(fx.home)} <span class="vs">vs</span> ${escapeHtml(fx.away)}</span>
         ${statusBadge}
         ${removeBtn}
       </div>
+      ${bodyHtml}
+      <button class="fx-expand-btn" data-fx-id="${escapeHtml(fxId)}">${toggleLabel}</button>
+    </div>
+  `;
+}
+
+function renderEventChips(fxEnc, events, fxId) {
+  return `
+    <div class="fx-events">
+      ${events.map((ev) => renderChip(fxEnc, ev, fxId)).join("")}
+    </div>
+  `;
+}
+
+function renderChip(fxEnc, ev, fxId) {
+  const inSlip = slip.some((s) => s.fxId == fxId && s.eventKind === ev.kind && s.eventCode === ev.code);
+  const evEnc = encodeURIComponent(JSON.stringify(ev));
+  return `
+    <div class="event-chip">
+      <span class="event-label">${escapeHtml(ev.label)}</span>
+      <span class="event-prob">${(ev.prob * 100).toFixed(1)}%</span>
+      <button class="add-event-btn ${inSlip ? "in-slip" : ""}"
+              data-fx="${fxEnc}"
+              data-event="${evEnc}"
+              title="${inSlip ? "Már a szelvényen" : "Hozzáadás a szelvényhez"}">
+        ${inSlip ? "✓" : "+"}
+      </button>
+    </div>
+  `;
+}
+
+function renderExpandedEvents(fxMeta, fxEnc, groups) {
+  const fxId = String(fxMeta.id);
+  const section = (title, events) => `
+    <div class="fx-event-group">
+      <div class="fx-event-group-title">${escapeHtml(title)}</div>
       <div class="fx-events">
-        ${events.map((e) => {
-          const inSlip = slip.some((s) => s.fxId == fx.id && s.eventKind === e.kind && s.eventCode === e.code);
-          const evEnc = encodeURIComponent(JSON.stringify(e));
-          return `
-            <div class="event-chip">
-              <span class="event-label">${escapeHtml(e.label)}</span>
-              <span class="event-prob">${(e.prob * 100).toFixed(1)}%</span>
-              <button class="add-event-btn ${inSlip ? "in-slip" : ""}"
-                      data-fx="${fxEnc}"
-                      data-event="${evEnc}"
-                      title="${inSlip ? "Már a szelvényen" : "Hozzáadás a szelvényhez"}">
-                ${inSlip ? "✓" : "+"}
-              </button>
-            </div>
-          `;
-        }).join("")}
+        ${events.map((ev) => renderChip(fxEnc, ev, fxId)).join("")}
       </div>
+    </div>
+  `;
+  return `
+    <div class="fx-events-expanded">
+      ${section("Kimenet (1X2)",    groups.outcomes)}
+      ${section("Dupla esély",       groups.dcEvents)}
+      ${section("Gólszám (Over/Under)", groups.totals)}
+      ${section("Mindkét csapat szerez gólt", groups.bttsEvents)}
+      ${section("Legvalószínűbb pontos eredmények", groups.scoreEvents)}
     </div>
   `;
 }
