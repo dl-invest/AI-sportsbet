@@ -468,6 +468,9 @@ function renderFixtures() {
 
   fixtures.sort((a, b) => new Date(a.utcDate) - new Date(b.utcDate));
 
+  // Suggestions are computed on the same filtered set, minus finished/live games
+  renderSuggestions(fixtures);
+
   if (fixtures.length === 0) {
     list.innerHTML = `<div class="empty">NINCS MECCS A SZŰRT IDŐSZAKRA</div>`;
     return;
@@ -783,6 +786,207 @@ function clearSlip() {
   if (!confirm("Biztosan üríted a szelvényt?")) return;
   slip = [];
   saveLS("betslip", slip);
+  renderSlip();
+  renderFixtures();
+}
+
+/* --------------------------------------------------------------
+   SUGGESTIONS — three automatic slip candidates built from the
+   model's highest-probability events across all today's fixtures.
+   Each card: max 1 event per match (diversified parlay), top 3
+   by ensemble probability in its scope.
+   -------------------------------------------------------------- */
+function renderSuggestions(fixtures) {
+  const container = document.getElementById("fixtures-suggestions");
+  if (!container) return;
+
+  // Only bettable matches (exclude finished / live / cancelled)
+  const bettable = fixtures.filter((f) =>
+    f.status !== "FINISHED" &&
+    f.status !== "IN_PLAY"  &&
+    f.status !== "PAUSED"   &&
+    f.status !== "CANCELLED");
+
+  if (bettable.length === 0) {
+    container.innerHTML = "";
+    return;
+  }
+
+  // For every match compute the event pools once
+  const perMatch = [];
+  for (const fx of bettable) {
+    let pred;
+    try {
+      pred = predictMatch({
+        league: fx.league,
+        date:   fx.utcDate.slice(0, 10),
+        home:   fx.home,
+        away:   fx.away,
+      });
+    } catch { continue; }
+    const e = pred.ensemble, p = pred.poisson;
+    const outcome = [
+      { code: "1",  label: `${fx.home} (1)`,    prob: e.pHome,           kind: "1X2" },
+      { code: "X",  label: `Döntetlen (X)`,      prob: e.pDraw,           kind: "1X2" },
+      { code: "2",  label: `${fx.away} (2)`,    prob: e.pAway,           kind: "1X2" },
+      { code: "1X", label: "Dupla esély 1X",    prob: e.pHome + e.pDraw, kind: "DC"  },
+      { code: "X2", label: "Dupla esély X2",    prob: e.pDraw + e.pAway, kind: "DC"  },
+      { code: "12", label: "Dupla esély 12",    prob: e.pHome + e.pAway, kind: "DC"  },
+    ];
+    const goal = [
+      { code: "O15",    label: "Over 1.5",   prob: p.pOver15,     kind: "TOTAL" },
+      { code: "U15",    label: "Under 1.5",  prob: 1 - p.pOver15, kind: "TOTAL" },
+      { code: "O25",    label: "Over 2.5",   prob: p.pOver25,     kind: "TOTAL" },
+      { code: "U25",    label: "Under 2.5",  prob: 1 - p.pOver25, kind: "TOTAL" },
+      { code: "O35",    label: "Over 3.5",   prob: p.pOver35,     kind: "TOTAL" },
+      { code: "U35",    label: "Under 3.5",  prob: 1 - p.pOver35, kind: "TOTAL" },
+      { code: "BTTS_Y", label: "BTTS: Igen", prob: p.pBTTS,       kind: "BTTS"  },
+      { code: "BTTS_N", label: "BTTS: Nem",  prob: 1 - p.pBTTS,   kind: "BTTS"  },
+    ];
+    perMatch.push({ fx, outcome, goal });
+  }
+
+  if (perMatch.length === 0) {
+    container.innerHTML = "";
+    return;
+  }
+
+  // Build one suggestion: from each match pick its best event in the scope,
+  // then sort across matches and keep top 3 distinct matches.
+  function buildScope(scope) {
+    const cands = [];
+    for (const { fx, outcome, goal } of perMatch) {
+      const pool = scope === "outcome" ? outcome
+                 : scope === "goal"    ? goal
+                                       : [...outcome, ...goal];
+      if (pool.length === 0) continue;
+      const best = pool.reduce((a, b) => (a.prob > b.prob ? a : b));
+      cands.push({ fx, ev: best });
+    }
+    cands.sort((a, b) => b.ev.prob - a.ev.prob);
+    return cands.slice(0, 3);
+  }
+
+  const goalSugg    = buildScope("goal");
+  const outcomeSugg = buildScope("outcome");
+  const mixedSugg   = buildScope("mixed");
+
+  container.innerHTML = `
+    <div class="sugg-header">
+      <h3 class="sugg-title">&gt;&gt; SZELVÉNY JAVASLATOK</h3>
+      <div class="sugg-subtitle">a modell legmagasabb valószínűségű eseményei · meccsenként max. 1 tipp</div>
+    </div>
+    <div class="sugg-grid">
+      ${renderSuggCard("GÓLSZÁM-TIPPEK",   "goal",    goalSugg,    "var(--neon-yellow)")}
+      ${renderSuggCard("KIMENET / GYŐZTES","outcome", outcomeSugg, "var(--neon-cyan)")}
+      ${renderSuggCard("VEGYES (BÁRMI)",   "mixed",   mixedSugg,   "var(--neon-purple)")}
+    </div>
+  `;
+
+  container.querySelectorAll(".sugg-add-all").forEach((btn) => {
+    btn.addEventListener("click", onAddSuggestionAll);
+  });
+  container.querySelectorAll(".add-event-btn").forEach((btn) => {
+    btn.addEventListener("click", onAddEvent);
+  });
+}
+
+function renderSuggCard(title, id, items, accent) {
+  if (items.length === 0) {
+    return `
+      <div class="sugg-card" data-sugg-id="${id}" style="--sugg-accent:${accent}">
+        <div class="sugg-card-header">
+          <span class="sugg-card-title">${escapeHtml(title)}</span>
+        </div>
+        <div class="sugg-empty">Nincs elegendő meccs</div>
+      </div>
+    `;
+  }
+
+  const combined = items.reduce((p, it) => p * it.ev.prob, 1);
+  const impliedOdds = combined > 0 ? (1 / combined).toFixed(2) : "—";
+
+  const rows = items.map((it) => {
+    const fx = it.fx, ev = it.ev;
+    const fxEnc = encodeURIComponent(JSON.stringify({
+      id: fx.id, league: fx.league, utcDate: fx.utcDate, home: fx.home, away: fx.away,
+    }));
+    const evEnc = encodeURIComponent(JSON.stringify(ev));
+    const inSlip = slip.some((s) =>
+      s.fxId == fx.id && s.eventKind === ev.kind && s.eventCode === ev.code);
+    const time = new Date(fx.utcDate).toLocaleTimeString("hu-HU",
+      { hour: "2-digit", minute: "2-digit" });
+    return `
+      <div class="sugg-row">
+        <div class="sugg-row-match">
+          <span class="sugg-row-time">${time}</span>
+          ${escapeHtml(fx.home)} <span class="vs">vs</span> ${escapeHtml(fx.away)}
+        </div>
+        <div class="sugg-row-event">
+          <span class="event-label">${escapeHtml(ev.label)}</span>
+          <span class="event-prob">${(ev.prob * 100).toFixed(1)}%</span>
+          <button class="add-event-btn ${inSlip ? "in-slip" : ""}"
+                  data-fx="${fxEnc}" data-event="${evEnc}"
+                  title="${inSlip ? "Már a szelvényen" : "Hozzáadás a szelvényhez"}">
+            ${inSlip ? "✓" : "+"}
+          </button>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  const bulk = items.map((it) => ({
+    fx: {
+      id: it.fx.id, league: it.fx.league, utcDate: it.fx.utcDate,
+      home: it.fx.home, away: it.fx.away,
+    },
+    ev: it.ev,
+  }));
+  const bulkEnc = encodeURIComponent(JSON.stringify(bulk));
+
+  return `
+    <div class="sugg-card" data-sugg-id="${id}" style="--sugg-accent:${accent}">
+      <div class="sugg-card-header">
+        <span class="sugg-card-title">${escapeHtml(title)}</span>
+        <span class="sugg-card-badge mono" title="együttes valószínűség · implicit odds">
+          ${(combined * 100).toFixed(1)}% · ${impliedOdds}
+        </span>
+      </div>
+      <div class="sugg-rows">${rows}</div>
+      <button class="sugg-add-all" data-items="${bulkEnc}">+ MINDHÁROM A SZELVÉNYHEZ</button>
+    </div>
+  `;
+}
+
+function onAddSuggestionAll(e) {
+  const items = JSON.parse(decodeURIComponent(e.currentTarget.dataset.items));
+  let added = 0;
+  for (const { fx, ev } of items) {
+    const sid = `${fx.id}__${ev.kind}__${ev.code}`;
+    if (slip.some((s) => s.id === sid)) continue;
+    // one 1X2 per match rule
+    if (ev.kind === "1X2") {
+      slip = slip.filter((s) => !(s.fxId == fx.id && s.eventKind === "1X2"));
+    }
+    slip.push({
+      id:         sid,
+      fxId:       fx.id,
+      league:     fx.league,
+      matchLabel: `${fx.home} vs ${fx.away}`,
+      utcDate:    fx.utcDate,
+      eventLabel: ev.label,
+      eventCode:  ev.code,
+      eventKind:  ev.kind,
+      prob:       ev.prob,
+      addedAt:    Date.now(),
+    });
+    added++;
+  }
+  saveLS("betslip", slip);
+
+  e.currentTarget.classList.add("added");
+  setTimeout(() => e.currentTarget.classList.remove("added"), 500);
+
   renderSlip();
   renderFixtures();
 }

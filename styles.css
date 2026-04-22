@@ -534,6 +534,159 @@ main > .betslip        { grid-column: 2; grid-row: span 10; position: sticky; to
 }
 
 /* ---- fixture list ---- */
+/* ---- suggestions (top of fixtures panel) ---- */
+.fixtures-suggestions {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+.fixtures-suggestions:empty { display: none; }
+
+.sugg-header { display: flex; flex-direction: column; gap: 2px; }
+.sugg-title {
+  margin: 0;
+  color: var(--neon-pink);
+  letter-spacing: 3px;
+  font-size: 0.95rem;
+  text-shadow: 0 0 10px rgba(255,43,214,0.6);
+}
+.sugg-subtitle {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  letter-spacing: 1.5px;
+}
+
+.sugg-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.sugg-card {
+  --sugg-accent: var(--neon-cyan);
+  background: linear-gradient(180deg, rgba(0,0,0,0.35) 0%, rgba(15,12,45,0.3) 100%);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px var(--sugg-accent) inset, 0 0 24px color-mix(in oklab, var(--sugg-accent) 15%, transparent);
+  transition: box-shadow 0.2s, transform 0.15s;
+}
+.sugg-card::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: var(--sugg-accent);
+  box-shadow: 0 0 16px var(--sugg-accent);
+  opacity: 0.8;
+}
+.sugg-card:hover {
+  box-shadow: 0 0 0 1px var(--sugg-accent) inset, 0 0 40px color-mix(in oklab, var(--sugg-accent) 28%, transparent);
+  transform: translateY(-1px);
+}
+
+.sugg-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sugg-card-title {
+  color: var(--sugg-accent);
+  font-size: 0.82rem;
+  letter-spacing: 2.5px;
+  text-shadow: 0 0 8px color-mix(in oklab, var(--sugg-accent) 50%, transparent);
+  font-weight: 700;
+}
+.sugg-card-badge {
+  font-family: monospace;
+  font-size: 0.78rem;
+  color: var(--neon-green);
+  text-shadow: 0 0 8px rgba(57,255,20,0.4);
+  background: rgba(57,255,20,0.08);
+  border: 1px solid rgba(57,255,20,0.35);
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.sugg-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sugg-row {
+  background: rgba(7,7,26,0.55);
+  border: 1px solid rgba(255,255,255,0.04);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.sugg-row-match {
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  letter-spacing: 1px;
+  margin-bottom: 4px;
+}
+.sugg-row-match .sugg-row-time {
+  color: var(--neon-yellow);
+  font-family: monospace;
+  margin-right: 6px;
+}
+.sugg-row-match .vs { color: var(--text-dim); margin: 0 4px; }
+.sugg-row-event {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+}
+.sugg-row-event .event-label { color: var(--text); letter-spacing: 0.5px; }
+.sugg-row-event .event-prob {
+  color: var(--neon-yellow);
+  font-family: monospace;
+  font-size: 0.78rem;
+  text-shadow: 0 0 6px rgba(255,242,0,0.5);
+}
+
+.sugg-add-all {
+  margin-top: 4px;
+  padding: 8px 10px;
+  background: transparent;
+  color: var(--sugg-accent);
+  border: 1px solid var(--sugg-accent);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 0.72rem;
+  letter-spacing: 2.5px;
+  cursor: pointer;
+  font-weight: 700;
+  transition: all 0.15s;
+  text-shadow: 0 0 8px color-mix(in oklab, var(--sugg-accent) 45%, transparent);
+}
+.sugg-add-all:hover {
+  background: color-mix(in oklab, var(--sugg-accent) 15%, transparent);
+  box-shadow: 0 0 16px color-mix(in oklab, var(--sugg-accent) 45%, transparent);
+}
+.sugg-add-all.added {
+  background: var(--sugg-accent);
+  color: var(--bg);
+  transform: scale(0.98);
+}
+.sugg-empty {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  text-align: center;
+  padding: 14px 8px;
+  letter-spacing: 1px;
+}
+
 .fixtures-list { display: flex; flex-direction: column; gap: 18px; }
 .fixture-group h3 {
   margin: 0 0 10px;
@@ -874,6 +1027,7 @@ main > .betslip        { grid-column: 2; grid-row: span 10; position: sticky; to
   .manual-fixture-form {
     grid-template-columns: 1fr 1fr;
   }
+  .sugg-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 720px) {
   .form-grid { grid-template-columns: 1fr; }
