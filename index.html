@@ -20,6 +20,67 @@
 </header>
 
 <main>
+  <section class="panel fixtures-panel" id="fixtures-panel">
+    <div class="fixtures-header">
+      <h2 class="panel-title">&gt;&gt; MAI MECCSEK</h2>
+      <div class="fixtures-controls">
+        <select id="fixture-league-filter">
+          <option value="ALL">ÖSSZES LIGA</option>
+          <option value="EPL">Premier League</option>
+          <option value="LALIGA">La Liga</option>
+          <option value="SERIEA">Serie A</option>
+          <option value="BUNDES">Bundesliga</option>
+          <option value="LIGUE1">Ligue 1</option>
+        </select>
+        <select id="fixture-day-filter">
+          <option value="today">Ma</option>
+          <option value="tomorrow">Holnap</option>
+          <option value="all">Ma + Holnap</option>
+        </select>
+        <button type="button" id="fixture-manual-btn" class="btn-small">+ KÉZI</button>
+      </div>
+    </div>
+    <div id="fixtures-updated" class="fixtures-updated"></div>
+
+    <form id="manual-fixture-form" class="manual-fixture-form hidden" autocomplete="off">
+      <select id="m-league" required>
+        <option value="">-- Liga --</option>
+        <option value="EPL">Premier League</option>
+        <option value="LALIGA">La Liga</option>
+        <option value="SERIEA">Serie A</option>
+        <option value="BUNDES">Bundesliga</option>
+        <option value="LIGUE1">Ligue 1</option>
+        <option value="NB1">NB I.</option>
+        <option value="UCL">UCL</option>
+        <option value="OTHER">Egyéb</option>
+      </select>
+      <input type="datetime-local" id="m-date" required />
+      <input type="text" id="m-home" list="teams" placeholder="Hazai csapat" required />
+      <input type="text" id="m-away" list="teams" placeholder="Vendég csapat" required />
+      <button type="submit" class="btn-small">+ HOZZÁAD</button>
+    </form>
+
+    <div id="fixtures-list" class="fixtures-list"></div>
+  </section>
+
+  <aside id="betslip" class="betslip">
+    <div class="betslip-header">
+      <h2 class="panel-title">&gt;&gt; SZELVÉNY <span id="slip-count">(0)</span></h2>
+      <button type="button" id="slip-clear" class="btn-small">ÜRÍTÉS</button>
+    </div>
+    <div id="slip-items"></div>
+    <div id="slip-summary" class="slip-summary">
+      <div class="slip-stat">
+        <span class="slip-stat-label">Együttes valószínűség</span>
+        <span class="mono slip-stat-val" id="slip-prob">—</span>
+      </div>
+      <div class="slip-stat">
+        <span class="slip-stat-label">Implicit odds</span>
+        <span class="mono slip-stat-val" id="slip-odds">—</span>
+      </div>
+    </div>
+  </aside>
+
   <section class="panel">
     <h2 class="panel-title">&gt;&gt; INPUT_MATCH_DATA</h2>
 
@@ -81,6 +142,7 @@
 </footer>
 
 <script src="teams.js"></script>
+<script src="fixtures.js"></script>
 <script src="predictor.js"></script>
 <script src="app.js"></script>
 </body>

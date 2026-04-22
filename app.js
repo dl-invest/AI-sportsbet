@@ -19,6 +19,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("predict-form").addEventListener("submit", onSubmit);
   document.getElementById("toggle-breakdown").addEventListener("click", toggleBreakdown);
+
+  // fixtures + betslip
+  initFixtures();
 });
 
 function onSubmit(e) {
@@ -362,4 +365,340 @@ function escapeHtml(s) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+/* ==============================================================
+   FIXTURES + BET SLIP
+   ============================================================== */
+
+const LEAGUE_LABEL = {
+  EPL:    "Premier League",
+  LALIGA: "La Liga",
+  SERIEA: "Serie A",
+  BUNDES: "Bundesliga",
+  LIGUE1: "Ligue 1",
+  NB1:    "NB I.",
+  UCL:    "UEFA Champions League",
+  OTHER:  "Egyéb",
+};
+
+let manualFixtures = loadLS("manualFixtures", []);
+let slip           = loadLS("betslip",        []);
+
+function loadLS(key, def) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? def; }
+  catch { return def; }
+}
+function saveLS(key, val) { localStorage.setItem(key, JSON.stringify(val)); }
+
+function initFixtures() {
+  renderFixtures();
+  renderSlip();
+  document.getElementById("fixture-league-filter").addEventListener("change", renderFixtures);
+  document.getElementById("fixture-day-filter").addEventListener("change", renderFixtures);
+  document.getElementById("fixture-manual-btn").addEventListener("click", toggleManualForm);
+  document.getElementById("manual-fixture-form").addEventListener("submit", onManualAdd);
+  document.getElementById("slip-clear").addEventListener("click", clearSlip);
+
+  const upd = document.getElementById("fixtures-updated");
+  if (typeof FIXTURES_UPDATED !== "undefined" && FIXTURES_UPDATED) {
+    const d = new Date(FIXTURES_UPDATED);
+    upd.textContent = `// FIXTURES UPDATED: ${d.toLocaleString("hu-HU")} //`;
+  } else {
+    upd.textContent = "// nincs auto-frissített lista — használd a + KÉZI gombot //";
+  }
+}
+
+function toggleManualForm() {
+  const f = document.getElementById("manual-fixture-form");
+  f.classList.toggle("hidden");
+}
+
+function onManualAdd(e) {
+  e.preventDefault();
+  const league = document.getElementById("m-league").value;
+  const dateRaw = document.getElementById("m-date").value;
+  const home = document.getElementById("m-home").value.trim();
+  const away = document.getElementById("m-away").value.trim();
+  if (!league || !dateRaw || !home || !away) return;
+  if (home.toLowerCase() === away.toLowerCase()) {
+    alert("A hazai és vendég csapat nem egyezhet meg.");
+    return;
+  }
+  const id = `manual-${Date.now()}`;
+  manualFixtures.push({
+    id, league,
+    utcDate: new Date(dateRaw).toISOString(),
+    status: "SCHEDULED",
+    home, away, manual: true,
+  });
+  saveLS("manualFixtures", manualFixtures);
+  e.target.reset();
+  renderFixtures();
+}
+
+function allFixtures() {
+  const auto = (typeof FIXTURES !== "undefined" && Array.isArray(FIXTURES)) ? FIXTURES : [];
+  return [...auto, ...manualFixtures];
+}
+
+function filterByDay(fixtures, day) {
+  const now = new Date();
+  const t0 = new Date(now); t0.setHours(0, 0, 0, 0);
+  const t1 = new Date(t0);  t1.setDate(t1.getDate() + 1);
+  const t2 = new Date(t0);  t2.setDate(t2.getDate() + 2);
+  return fixtures.filter((f) => {
+    const d = new Date(f.utcDate);
+    if (day === "today")    return d >= t0 && d < t1;
+    if (day === "tomorrow") return d >= t1 && d < t2;
+    return d >= t0 && d < t2;
+  });
+}
+
+function renderFixtures() {
+  const list    = document.getElementById("fixtures-list");
+  const lgF     = document.getElementById("fixture-league-filter").value;
+  const dayF    = document.getElementById("fixture-day-filter").value;
+
+  let fixtures = allFixtures();
+  fixtures = filterByDay(fixtures, dayF);
+  if (lgF !== "ALL") fixtures = fixtures.filter((f) => f.league === lgF);
+  fixtures = fixtures.filter((f) => f.status !== "CANCELLED" && f.status !== "POSTPONED");
+
+  fixtures.sort((a, b) => new Date(a.utcDate) - new Date(b.utcDate));
+
+  if (fixtures.length === 0) {
+    list.innerHTML = `<div class="empty">NINCS MECCS A SZŰRT IDŐSZAKRA</div>`;
+    return;
+  }
+
+  // group by league
+  const byLeague = {};
+  for (const f of fixtures) (byLeague[f.league] ||= []).push(f);
+
+  const order = ["EPL", "LALIGA", "SERIEA", "BUNDES", "LIGUE1", "UCL", "NB1", "OTHER"];
+  const keys = Object.keys(byLeague).sort((a, b) => {
+    const ai = order.indexOf(a), bi = order.indexOf(b);
+    return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+  });
+
+  list.innerHTML = keys.map((lg) => `
+    <div class="fixture-group">
+      <h3>${escapeHtml(LEAGUE_LABEL[lg] || lg)}</h3>
+      <div class="fixture-cards">
+        ${byLeague[lg].map(renderFixtureCard).join("")}
+      </div>
+    </div>
+  `).join("");
+
+  // wire up buttons
+  list.querySelectorAll(".add-event-btn").forEach((btn) => {
+    btn.addEventListener("click", onAddEvent);
+  });
+  list.querySelectorAll(".remove-fixture-btn").forEach((btn) => {
+    btn.addEventListener("click", onRemoveManualFixture);
+  });
+}
+
+function renderFixtureCard(fx) {
+  let pred;
+  try {
+    pred = predictMatch({
+      league: fx.league,
+      date:   fx.utcDate.slice(0, 10),
+      home:   fx.home,
+      away:   fx.away,
+    });
+  } catch (err) {
+    return `<div class="fixture-card error">Predikció hiba: ${escapeHtml(err.message)}</div>`;
+  }
+
+  const { pick, pickProb, goalLine, goalLineProb } = pred.recommendation;
+  const pickLabel =
+    pick === "1" ? fx.home :
+    pick === "2" ? fx.away : "Döntetlen";
+  const pickCode = pick === "1" ? "1" : pick === "2" ? "2" : "X";
+
+  const time = new Date(fx.utcDate).toLocaleTimeString("hu-HU",
+    { hour: "2-digit", minute: "2-digit" });
+
+  // Candidate events — we take the TOP-3 by probability (dedup).
+  const candidates = [
+    { code: pickCode,  label: `${pickLabel} (${pickCode})`, prob: pickProb,           kind: "1X2" },
+    { code: goalLine,  label: goalLine,                     prob: goalLineProb,       kind: "TOTAL" },
+    { code: "BTTS_Y",  label: "BTTS: Igen",                 prob: pred.poisson.pBTTS, kind: "BTTS" },
+    { code: "O15",     label: "Over 1.5",                   prob: pred.poisson.pOver15, kind: "TOTAL" },
+    { code: "O25",     label: "Over 2.5",                   prob: pred.poisson.pOver25, kind: "TOTAL" },
+  ];
+  // dedupe by (code + kind) and take top 3 by prob
+  const seen = new Set();
+  const events = [];
+  for (const e of candidates.sort((a, b) => b.prob - a.prob)) {
+    const key = `${e.kind}:${e.code}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    events.push(e);
+    if (events.length === 3) break;
+  }
+
+  const statusBadge = renderStatus(fx.status, fx.score);
+  const removeBtn = fx.manual
+    ? `<button class="remove-fixture-btn" data-fx-id="${escapeHtml(fx.id)}" title="Törlés">✕</button>` : "";
+
+  const fxEnc = encodeURIComponent(JSON.stringify({
+    id: fx.id, league: fx.league, utcDate: fx.utcDate, home: fx.home, away: fx.away,
+  }));
+
+  return `
+    <div class="fixture-card" data-fx-id="${escapeHtml(String(fx.id))}">
+      <div class="fx-header">
+        <span class="fx-time">${time}</span>
+        <span class="fx-teams">${escapeHtml(fx.home)} <span class="vs">vs</span> ${escapeHtml(fx.away)}</span>
+        ${statusBadge}
+        ${removeBtn}
+      </div>
+      <div class="fx-events">
+        ${events.map((e) => {
+          const inSlip = slip.some((s) => s.fxId == fx.id && s.eventKind === e.kind && s.eventCode === e.code);
+          const evEnc = encodeURIComponent(JSON.stringify(e));
+          return `
+            <div class="event-chip">
+              <span class="event-label">${escapeHtml(e.label)}</span>
+              <span class="event-prob">${(e.prob * 100).toFixed(1)}%</span>
+              <button class="add-event-btn ${inSlip ? "in-slip" : ""}"
+                      data-fx="${fxEnc}"
+                      data-event="${evEnc}"
+                      title="${inSlip ? "Már a szelvényen" : "Hozzáadás a szelvényhez"}">
+                ${inSlip ? "✓" : "+"}
+              </button>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderStatus(status, score) {
+  if (!status || status === "SCHEDULED" || status === "TIMED") return "";
+  if (status === "IN_PLAY" || status === "PAUSED") {
+    return `<span class="fx-status live">LIVE${score ? ` ${score.home}-${score.away}` : ""}</span>`;
+  }
+  if (status === "FINISHED") {
+    return `<span class="fx-status finished">FT ${score ? `${score.home}-${score.away}` : ""}</span>`;
+  }
+  return `<span class="fx-status">${escapeHtml(status)}</span>`;
+}
+
+function onAddEvent(e) {
+  const fx = JSON.parse(decodeURIComponent(e.currentTarget.dataset.fx));
+  const ev = JSON.parse(decodeURIComponent(e.currentTarget.dataset.event));
+  const sid = `${fx.id}__${ev.kind}__${ev.code}`;
+
+  // toggle — if already in slip, remove
+  const existingIdx = slip.findIndex((s) => s.id === sid);
+  if (existingIdx >= 0) {
+    slip.splice(existingIdx, 1);
+  } else {
+    // one 1X2 per match (replace any existing 1X2 on the same match)
+    if (ev.kind === "1X2") {
+      slip = slip.filter((s) => !(s.fxId == fx.id && s.eventKind === "1X2"));
+    }
+    slip.push({
+      id:         sid,
+      fxId:       fx.id,
+      league:     fx.league,
+      matchLabel: `${fx.home} vs ${fx.away}`,
+      utcDate:    fx.utcDate,
+      eventLabel: ev.label,
+      eventCode:  ev.code,
+      eventKind:  ev.kind,
+      prob:       ev.prob,
+      addedAt:    Date.now(),
+    });
+  }
+  saveLS("betslip", slip);
+
+  // micro-flash feedback
+  e.currentTarget.classList.add("added");
+  setTimeout(() => e.currentTarget.classList.remove("added"), 400);
+
+  renderSlip();
+  renderFixtures(); // re-render to update the "in-slip" check marks
+}
+
+function onRemoveManualFixture(e) {
+  const id = e.currentTarget.dataset.fxId;
+  manualFixtures = manualFixtures.filter((f) => f.id !== id);
+  saveLS("manualFixtures", manualFixtures);
+  // also remove any slip items referencing this fixture
+  slip = slip.filter((s) => s.fxId !== id);
+  saveLS("betslip", slip);
+  renderFixtures();
+  renderSlip();
+}
+
+function renderSlip() {
+  const items   = document.getElementById("slip-items");
+  const count   = document.getElementById("slip-count");
+  const probEl  = document.getElementById("slip-prob");
+  const oddsEl  = document.getElementById("slip-odds");
+
+  count.textContent = `(${slip.length})`;
+
+  if (slip.length === 0) {
+    items.innerHTML = `
+      <div class="slip-empty">
+        ÜRES SZELVÉNY<br/>
+        <span style="color:var(--text-dim); font-size:0.75rem">
+          Adj hozzá eseményeket a meccsek mellől a <strong style="color:var(--neon-green)">+</strong> gombbal.
+        </span>
+      </div>`;
+    probEl.textContent = "—";
+    oddsEl.textContent = "—";
+    return;
+  }
+
+  // sorted by match time
+  const sorted = [...slip].sort((a, b) =>
+    new Date(a.utcDate) - new Date(b.utcDate) || a.addedAt - b.addedAt);
+
+  items.innerHTML = sorted.map((s) => {
+    const t = new Date(s.utcDate).toLocaleString("hu-HU",
+      { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+    return `
+      <div class="slip-item">
+        <div class="slip-match">${t} · ${escapeHtml(LEAGUE_LABEL[s.league] || s.league)} · ${escapeHtml(s.matchLabel)}</div>
+        <div class="slip-event">
+          <span>${escapeHtml(s.eventLabel)}</span>
+          <span class="mono">${(s.prob * 100).toFixed(1)}%</span>
+          <button class="slip-remove" data-id="${escapeHtml(s.id)}" title="Eltávolítás">✕</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  items.querySelectorAll(".slip-remove").forEach((b) => {
+    b.addEventListener("click", (e) => {
+      const id = e.currentTarget.dataset.id;
+      slip = slip.filter((s) => s.id !== id);
+      saveLS("betslip", slip);
+      renderSlip();
+      renderFixtures();
+    });
+  });
+
+  // combined probability (assumes independence — standard accumulator math)
+  const combined = slip.reduce((p, s) => p * s.prob, 1);
+  probEl.textContent = (combined * 100).toFixed(2) + "%";
+  oddsEl.textContent = combined > 0 ? (1 / combined).toFixed(2) : "—";
+}
+
+function clearSlip() {
+  if (slip.length === 0) return;
+  if (!confirm("Biztosan üríted a szelvényt?")) return;
+  slip = [];
+  saveLS("betslip", slip);
+  renderSlip();
+  renderFixtures();
 }
